@@ -1,235 +1,519 @@
-import { useRef, useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { useParams } from "react-router-dom";
-import { getDrawing,saveDrawing ,clearDrawing} from "../api/drawingApi";
+import api from "../api/axios";
 
 function Whiteboard() {
   const { id } = useParams();
 
-  // ==========================================
-  // CANVAS REFERENCES
-  // ==========================================
-
   const canvasRef = useRef(null);
-  const previewCanvasRef = useRef(null);
 
-  const ctxRef = useRef(null);
-  const previewCtxRef = useRef(null);
+  // --------------------------------------------------
+  // DRAWING STATE
+  // --------------------------------------------------
 
-  // ==========================================
-  // DRAWING REFERENCES
-  // ==========================================
+  const [elements, setElements] = useState([]);
+  const [redoStack, setRedoStack] = useState([]);
 
-  const startPointRef = useRef({
+  const [tool, setTool] = useState("pencil");
+  const [color, setColor] = useState("#000000");
+  const [brushSize, setBrushSize] = useState(2);
+
+  const [isDrawing, setIsDrawing] = useState(false);
+
+  // Temporary element while dragging
+  const [previewElement, setPreviewElement] = useState(null);
+
+  // --------------------------------------------------
+  // SAVE STATE
+  // --------------------------------------------------
+
+  const [saveStatus, setSaveStatus] = useState("Saved");
+
+  // Used to prevent autosave before MongoDB drawing is loaded
+  const drawingLoaded = useRef(false);
+
+  // Autosave timer
+  const autoSaveTimer = useRef(null);
+
+  // --------------------------------------------------
+  // CAMERA
+  // --------------------------------------------------
+
+  const [camera, setCamera] = useState({
+    x: 0,
+    y: 0,
+    zoom: 1,
+  });
+
+  // --------------------------------------------------
+  // PAN
+  // --------------------------------------------------
+
+  const isPanning = useRef(false);
+
+  const panStart = useRef({
     x: 0,
     y: 0,
   });
 
-  const activeElementRef = useRef(null);
+  const cameraStart = useRef({
+    x: 0,
+    y: 0,
+  });
 
-  // ==========================================
-  // STATES
-  // ==========================================
+  // --------------------------------------------------
+  // DRAWING START POINT
+  // --------------------------------------------------
 
-  const [isDrawing, setIsDrawing] = useState(false);
+  const startPoint = useRef({
+    x: 0,
+    y: 0,
+  });
 
-  const [color, setColor] = useState("#000000");
+  // --------------------------------------------------
+  // SPACE KEY
+  // --------------------------------------------------
 
-  const [brushSize, setBrushSize] = useState(2);
+  const spacePressed = useRef(false);
 
-  const [tool, setTool] = useState("pencil");
+  // ==================================================
+  // LOAD DRAWING FROM MONGODB
+  // ==================================================
 
-  // Completed drawing elements
-  const [elements, setElements] = useState([]);
+  useEffect(() => {
+    const loadDrawing = async () => {
+      try {
+        setSaveStatus("Loading...");
 
+        const response = await api.get(`/drawing/${id}`);
 
-  // Undo / Redo history
-  const [undoStack, setUndoStack] = useState([]);
+        if (
+          response.data.success &&
+          response.data.drawing
+        ) {
+          const savedElements =
+            response.data.drawing.elements || [];
 
-  const [redoStack, setRedoStack] = useState([]);
+          setElements(savedElements);
+        }
 
+        drawingLoaded.current = true;
 
-  // ==========================================
-// LOAD DRAWING FROM MONGODB
-// ==========================================
-
-useEffect(() => {
-  const loadDrawing = async () => {
-    try {
-      const response = await getDrawing(id);
-
-      console.log("Drawing loaded:", response.data);
-
-      if (response.data.success) {
-        setElements(
-          response.data.drawing?.elements || []
+        setSaveStatus("Saved");
+      } catch (error) {
+        console.error(
+          "Failed to load drawing:",
+          error
         );
+
+        setSaveStatus("Load failed");
       }
+    };
+
+    loadDrawing();
+  }, [id]);
+
+  // ==================================================
+  // SAVE DRAWING
+  // ==================================================
+
+  const saveDrawing = async (elementsToSave = elements) => {
+    if (!drawingLoaded.current) {
+      return;
+    }
+
+    try {
+      setSaveStatus("Saving...");
+
+      await api.post("/drawing/save", {
+        boardId: id,
+        elements: elementsToSave,
+      });
+
+      setSaveStatus("Saved");
     } catch (error) {
       console.error(
-        "Failed to load drawing:",
+        "Failed to save drawing:",
         error
       );
+
+      setSaveStatus("Save failed");
     }
   };
 
-  if (id) {
-    loadDrawing();
-  }
-}, [id]);
+  // ==================================================
+  // AUTO SAVE
+  // ==================================================
 
-// ==========================================
-// SAVE DRAWING TO MONGODB
-// ==========================================
-
-const handleSave = async () => {
-  try {
-    const response = await saveDrawing(id, elements);
-
-    if (response.data.success) {
-      alert("Drawing saved successfully!");
+  useEffect(() => {
+    if (!drawingLoaded.current) {
+      return;
     }
-  } catch (error) {
-    console.error("Failed to save drawing:", error);
 
-    alert("Failed to save drawing");
-  }
-};
+    // Clear previous timer
+    if (autoSaveTimer.current) {
+      clearTimeout(autoSaveTimer.current);
+    }
 
+    setSaveStatus("Unsaved changes");
 
-  // ==========================================
-  // INITIALIZE CANVAS
-  // ==========================================
+    // Wait 1 second after the last change
+    autoSaveTimer.current = setTimeout(() => {
+      saveDrawing(elements);
+    }, 1000);
+
+    return () => {
+      if (autoSaveTimer.current) {
+        clearTimeout(autoSaveTimer.current);
+      }
+    };
+  }, [elements]);
+
+  // ==================================================
+  // CANVAS RESIZE
+  // ==================================================
 
   useEffect(() => {
     const canvas = canvasRef.current;
-    const previewCanvas = previewCanvasRef.current;
 
-    const ctx = canvas.getContext("2d");
-    const previewCtx = previewCanvas.getContext("2d");
+    if (!canvas) return;
 
-    ctx.lineCap = "round";
-    ctx.lineJoin = "round";
+    const resizeCanvas = () => {
+      canvas.width = window.innerWidth;
+      canvas.height = window.innerHeight;
 
-    previewCtx.lineCap = "round";
-    previewCtx.lineJoin = "round";
+      drawCanvas();
+    };
 
-    ctxRef.current = ctx;
-    previewCtxRef.current = previewCtx;
+    resizeCanvas();
+
+    window.addEventListener(
+      "resize",
+      resizeCanvas
+    );
+
+    return () => {
+      window.removeEventListener(
+        "resize",
+        resizeCanvas
+      );
+    };
   }, []);
 
-  // ==========================================
-  // DRAW ELEMENT
-  // ==========================================
+  // ==================================================
+  // KEYBOARD SHORTCUTS
+  // ==================================================
 
-  const drawElement = (ctx, element) => {
-    if (!ctx || !element) {
-      return;
+  useEffect(() => {
+    const handleKeyDown = (e) => {
+      if (e.code === "Space") {
+        spacePressed.current = true;
+      }
+
+      // Ctrl + Z
+      if (
+        (e.ctrlKey || e.metaKey) &&
+        e.key.toLowerCase() === "z" &&
+        !e.shiftKey
+      ) {
+        e.preventDefault();
+
+        undo();
+      }
+
+      // Ctrl + Y
+      if (
+        (e.ctrlKey || e.metaKey) &&
+        e.key.toLowerCase() === "y"
+      ) {
+        e.preventDefault();
+
+        redo();
+      }
+
+      // Ctrl + Shift + Z
+      if (
+        (e.ctrlKey || e.metaKey) &&
+        e.shiftKey &&
+        e.key.toLowerCase() === "z"
+      ) {
+        e.preventDefault();
+
+        redo();
+      }
+
+      // Ctrl + S
+      if (
+        (e.ctrlKey || e.metaKey) &&
+        e.key.toLowerCase() === "s"
+      ) {
+        e.preventDefault();
+
+        saveDrawing(elements);
+      }
+    };
+
+    const handleKeyUp = (e) => {
+      if (e.code === "Space") {
+        spacePressed.current = false;
+      }
+    };
+
+    window.addEventListener(
+      "keydown",
+      handleKeyDown
+    );
+
+    window.addEventListener(
+      "keyup",
+      handleKeyUp
+    );
+
+    return () => {
+      window.removeEventListener(
+        "keydown",
+        handleKeyDown
+      );
+
+      window.removeEventListener(
+        "keyup",
+        handleKeyUp
+      );
+    };
+  }, [elements, redoStack]);
+
+  // ==================================================
+  // DRAW CANVAS
+  // ==================================================
+
+  useEffect(() => {
+    drawCanvas();
+  }, [
+    elements,
+    previewElement,
+    camera,
+  ]);
+
+  const drawCanvas = () => {
+    const canvas = canvasRef.current;
+
+    if (!canvas) return;
+
+    const ctx = canvas.getContext("2d");
+
+    ctx.clearRect(
+      0,
+      0,
+      canvas.width,
+      canvas.height
+    );
+
+    // Background
+    ctx.fillStyle = "#f8fafc";
+
+    ctx.fillRect(
+      0,
+      0,
+      canvas.width,
+      canvas.height
+    );
+
+    // Grid
+    drawGrid(ctx);
+
+    // Camera
+    ctx.save();
+
+    ctx.translate(
+      camera.x,
+      camera.y
+    );
+
+    ctx.scale(
+      camera.zoom,
+      camera.zoom
+    );
+
+    // Saved elements
+    elements.forEach((element) => {
+      drawElement(ctx, element);
+    });
+
+    // Temporary preview
+    if (previewElement) {
+      drawElement(
+        ctx,
+        previewElement
+      );
     }
+
+    ctx.restore();
+  };
+
+  // ==================================================
+  // GRID
+  // ==================================================
+
+  const drawGrid = (ctx) => {
+    const gridSize =
+      40 * camera.zoom;
+
+    if (gridSize <= 0) return;
+
+    const offsetX =
+      ((camera.x % gridSize) +
+        gridSize) %
+      gridSize;
+
+    const offsetY =
+      ((camera.y % gridSize) +
+        gridSize) %
+      gridSize;
+
+    ctx.beginPath();
+
+    ctx.strokeStyle = "#e2e8f0";
+
+    ctx.lineWidth = 1;
+
+    for (
+      let x = offsetX;
+      x < canvasRef.current.width;
+      x += gridSize
+    ) {
+      ctx.moveTo(x, 0);
+
+      ctx.lineTo(
+        x,
+        canvasRef.current.height
+      );
+    }
+
+    for (
+      let y = offsetY;
+      y < canvasRef.current.height;
+      y += gridSize
+    ) {
+      ctx.moveTo(0, y);
+
+      ctx.lineTo(
+        canvasRef.current.width,
+        y
+      );
+    }
+
+    ctx.stroke();
+  };
+
+  // ==================================================
+  // DRAW ELEMENT
+  // ==================================================
+
+  const drawElement = (
+    ctx,
+    element
+  ) => {
+    ctx.save();
+
+    ctx.strokeStyle =
+      element.color || "#000000";
+
+    ctx.lineWidth =
+      element.strokeWidth || 2;
 
     ctx.lineCap = "round";
+
     ctx.lineJoin = "round";
 
-    ctx.lineWidth = element.lineWidth || 2;
-
-    ctx.strokeStyle = element.color || "#000000";
-
-    // ========================================
+    // -----------------------------------------------
     // PENCIL
-    // ========================================
+    // -----------------------------------------------
 
     if (element.type === "pencil") {
-      const points = element.points;
+      if (
+        !element.points ||
+        element.points.length < 2
+      ) {
+        ctx.restore();
 
-      if (!points || points.length === 0) {
         return;
       }
 
       ctx.beginPath();
 
       ctx.moveTo(
-        points[0].x,
-        points[0].y
+        element.points[0].x,
+        element.points[0].y
       );
 
-      for (let i = 1; i < points.length; i++) {
+      for (
+        let i = 1;
+        i < element.points.length;
+        i++
+      ) {
         ctx.lineTo(
-          points[i].x,
-          points[i].y
+          element.points[i].x,
+          element.points[i].y
         );
       }
 
       ctx.stroke();
-
-      ctx.closePath();
-
-      return;
     }
 
-    // ========================================
-    // ERASER
-    // ========================================
-
-    if (element.type === "eraser") {
-      const points = element.points;
-
-      if (!points || points.length === 0) {
-        return;
-      }
-
-      ctx.save();
-
-      ctx.globalCompositeOperation =
-        "destination-out";
-
-      ctx.lineWidth = element.lineWidth || 10;
-
-      ctx.beginPath();
-
-      ctx.moveTo(
-        points[0].x,
-        points[0].y
-      );
-
-      for (let i = 1; i < points.length; i++) {
-        ctx.lineTo(
-          points[i].x,
-          points[i].y
-        );
-      }
-
-      ctx.stroke();
-
-      ctx.closePath();
-
-      ctx.restore();
-
-      return;
-    }
-
-    // ========================================
+    // -----------------------------------------------
     // RECTANGLE
-    // ========================================
+    // -----------------------------------------------
 
-    if (element.type === "rectangle") {
-      ctx.beginPath();
-
+    if (
+      element.type === "rectangle"
+    ) {
       ctx.strokeRect(
         element.x,
         element.y,
         element.width,
         element.height
       );
-
-      ctx.closePath();
-
-      return;
     }
 
-    // ========================================
-    // LINE
-    // ========================================
+    // -----------------------------------------------
+    // CIRCLE
+    // -----------------------------------------------
 
-    if (element.type === "line") {
+    if (
+      element.type === "circle"
+    ) {
+      const radius =
+        Math.sqrt(
+          Math.pow(
+            element.width,
+            2
+          ) +
+            Math.pow(
+              element.height,
+              2
+            )
+        );
+
+      ctx.beginPath();
+
+      ctx.arc(
+        element.x,
+        element.y,
+        radius,
+        0,
+        Math.PI * 2
+      );
+
+      ctx.stroke();
+    }
+
+    // -----------------------------------------------
+    // LINE
+    // -----------------------------------------------
+
+    if (
+      element.type === "line"
+    ) {
       ctx.beginPath();
 
       ctx.moveTo(
@@ -243,1015 +527,1233 @@ const handleSave = async () => {
       );
 
       ctx.stroke();
-
-      ctx.closePath();
-
-      return;
     }
 
-    // ========================================
-    // CIRCLE
-    // ========================================
-
-    if (element.type === "circle") {
-      ctx.beginPath();
-
-      ctx.arc(
-        element.x,
-        element.y,
-        element.radius,
-        0,
-        Math.PI * 2
-      );
-
-      ctx.stroke();
-
-      ctx.closePath();
-
-      return;
-    }
+    ctx.restore();
   };
 
-  // ==========================================
-  // RENDER ALL ELEMENTS
-  // ==========================================
+  // ==================================================
+  // SCREEN → WORLD
+  // ==================================================
 
-  useEffect(() => {
-    const canvas = canvasRef.current;
-    const ctx = ctxRef.current;
+  const getWorldPoint = (e) => {
+    const rect =
+      canvasRef.current.getBoundingClientRect();
 
-    if (!canvas || !ctx) {
-      return;
-    }
+    const screenX =
+      e.clientX - rect.left;
 
-    ctx.clearRect(
-      0,
-      0,
-      canvas.width,
-      canvas.height
-    );
+    const screenY =
+      e.clientY - rect.top;
 
-    elements.forEach((element) => {
-      drawElement(ctx, element);
-    });
-  }, [elements]);
+    return {
+      x:
+        (screenX - camera.x) /
+        camera.zoom,
 
-
-  // ==========================================
-// AUTO SAVE DRAWING
-// ==========================================
-
-useEffect(() => {
-  if (!id) return;
-
-  // Don't auto-save when there are no elements
-  if (elements.length === 0) return;
-
-  // Wait 1 second after the last change
-  const timer = setTimeout(async () => {
-    try {
-      await saveDrawing(id, elements);
-
-      console.log("Auto saved successfully");
-    } catch (error) {
-      console.error("Auto save failed:", error);
-    }
-  }, 1000);
-
-  // Cancel previous timer if elements change again
-  return () => {
-    clearTimeout(timer);
-  };
-}, [elements, id]);
-
-  // ==========================================
-  // CLEAR PREVIEW
-  // ==========================================
-
-  const clearPreview = () => {
-    const canvas = previewCanvasRef.current;
-    const ctx = previewCtxRef.current;
-
-    if (!canvas || !ctx) {
-      return;
-    }
-
-    ctx.clearRect(
-      0,
-      0,
-      canvas.width,
-      canvas.height
-    );
-  };
-
-  // ==========================================
-  // ADD ELEMENT
-  // ==========================================
-
-  const addElement = (element) => {
-    setElements((previousElements) => {
-      const newElements = [
-        ...previousElements,
-        element,
-      ];
-
-      // Save previous state for Undo
-      setUndoStack((previousHistory) => [
-        ...previousHistory,
-        previousElements,
-      ]);
-
-      // New drawing means old Redo history
-      // is no longer valid
-      setRedoStack([]);
-
-      return newElements;
-    });
-  };
-
-  // ==========================================
-  // UNDO
-  // ==========================================
-
-  const undo = () => {
-    if (undoStack.length === 0) {
-      return;
-    }
-
-    const previousState =
-      undoStack[undoStack.length - 1];
-
-    // Remove last undo state
-    setUndoStack((previousHistory) =>
-      previousHistory.slice(0, -1)
-    );
-
-    // Current state goes into redo
-    setRedoStack((previousRedo) => [
-      ...previousRedo,
-      elements,
-    ]);
-
-    // Restore previous state
-    setElements(previousState);
-  };
-
-  // ==========================================
-  // REDO
-  // ==========================================
-
-  const redo = () => {
-    if (redoStack.length === 0) {
-      return;
-    }
-
-    const nextState =
-      redoStack[redoStack.length - 1];
-
-    // Remove last redo state
-    setRedoStack((previousRedo) =>
-      previousRedo.slice(0, -1)
-    );
-
-    // Current state goes into undo
-    setUndoStack((previousHistory) => [
-      ...previousHistory,
-      elements,
-    ]);
-
-    // Restore next state
-    setElements(nextState);
-  };
-
-  // ==========================================
-  // START DRAWING
-  // ==========================================
-
-  const startDrawing = (e) => {
-    const { offsetX, offsetY } =
-      e.nativeEvent;
-
-    // Save starting position
-    startPointRef.current = {
-      x: offsetX,
-      y: offsetY,
+      y:
+        (screenY - camera.y) /
+        camera.zoom,
     };
+  };
 
-    // ========================================
-    // PENCIL
-    // ========================================
+  // ==================================================
+  // MOUSE DOWN
+  // ==================================================
 
-    if (tool === "pencil") {
-      const pencilElement = {
-        id: crypto.randomUUID(),
+  const handleMouseDown = (e) => {
+    // Middle mouse button
+    if (e.button === 1) {
+      e.preventDefault();
 
-        type: "pencil",
-
-        points: [
-          {
-            x: offsetX,
-            y: offsetY,
-          },
-        ],
-
-        color: color,
-
-        lineWidth: brushSize,
-      };
-
-      activeElementRef.current =
-        pencilElement;
-
-      setIsDrawing(true);
+      startPanning(e);
 
       return;
     }
 
-    // ========================================
-    // ERASER
-    // ========================================
+    // Space + left click
+    if (
+      spacePressed.current
+    ) {
+      startPanning(e);
 
+      return;
+    }
+
+    const point =
+      getWorldPoint(e);
+
+    startPoint.current =
+      point;
+
+    // Eraser
     if (tool === "eraser") {
-      const eraserElement = {
-        id: crypto.randomUUID(),
-
-        type: "eraser",
-
-        points: [
-          {
-            x: offsetX,
-            y: offsetY,
-          },
-        ],
-
-        lineWidth: brushSize * 3,
-      };
-
-      activeElementRef.current =
-        eraserElement;
-
       setIsDrawing(true);
+
+      eraseElement(point);
 
       return;
     }
-
-    // ========================================
-    // SHAPES
-    // ========================================
 
     setIsDrawing(true);
 
-    clearPreview();
+    // -----------------------------------------------
+    // PENCIL
+    // -----------------------------------------------
+
+    if (tool === "pencil") {
+      setPreviewElement({
+        type: "pencil",
+
+        points: [point],
+
+        color,
+
+        strokeWidth:
+          brushSize,
+      });
+    }
+
+    // -----------------------------------------------
+    // RECTANGLE
+    // -----------------------------------------------
+
+    if (
+      tool === "rectangle"
+    ) {
+      setPreviewElement({
+        type: "rectangle",
+
+        x: point.x,
+
+        y: point.y,
+
+        width: 0,
+
+        height: 0,
+
+        color,
+
+        strokeWidth:
+          brushSize,
+      });
+    }
+
+    // -----------------------------------------------
+    // CIRCLE
+    // -----------------------------------------------
+
+    if (
+      tool === "circle"
+    ) {
+      setPreviewElement({
+        type: "circle",
+
+        x: point.x,
+
+        y: point.y,
+
+        width: 0,
+
+        height: 0,
+
+        color,
+
+        strokeWidth:
+          brushSize,
+      });
+    }
+
+    // -----------------------------------------------
+    // LINE
+    // -----------------------------------------------
+
+    if (tool === "line") {
+      setPreviewElement({
+        type: "line",
+
+        startX: point.x,
+
+        startY: point.y,
+
+        endX: point.x,
+
+        endY: point.y,
+
+        color,
+
+        strokeWidth:
+          brushSize,
+      });
+    }
   };
 
-  // ==========================================
-  // DRAW / PREVIEW
-  // ==========================================
+  // ==================================================
+  // MOUSE MOVE
+  // ==================================================
 
-  const draw = (e) => {
+  const handleMouseMove = (e) => {
+    // -----------------------------------------------
+    // PAN
+    // -----------------------------------------------
+
+    if (isPanning.current) {
+      const dx =
+        e.clientX -
+        panStart.current.x;
+
+      const dy =
+        e.clientY -
+        panStart.current.y;
+
+      setCamera((prev) => ({
+        ...prev,
+
+        x:
+          cameraStart.current.x +
+          dx,
+
+        y:
+          cameraStart.current.y +
+          dy,
+      }));
+
+      return;
+    }
+
     if (!isDrawing) {
       return;
     }
 
-    const { offsetX, offsetY } =
-      e.nativeEvent;
+    const point =
+      getWorldPoint(e);
 
-    // ========================================
-    // PENCIL
-    // ========================================
-
-    if (tool === "pencil") {
-      const element =
-        activeElementRef.current;
-
-      if (!element) {
-        return;
-      }
-
-      element.points.push({
-        x: offsetX,
-        y: offsetY,
-      });
-
-      const canvas = canvasRef.current;
-      const ctx = ctxRef.current;
-
-      ctx.clearRect(
-        0,
-        0,
-        canvas.width,
-        canvas.height
-      );
-
-      // Draw completed elements
-      elements.forEach((item) => {
-        drawElement(ctx, item);
-      });
-
-      // Draw current pencil stroke
-      drawElement(ctx, element);
-
-      return;
-    }
-
-    // ========================================
+    // -----------------------------------------------
     // ERASER
-    // ========================================
+    // -----------------------------------------------
 
     if (tool === "eraser") {
-      const element =
-        activeElementRef.current;
-
-      if (!element) {
-        return;
-      }
-
-      element.points.push({
-        x: offsetX,
-        y: offsetY,
-      });
-
-      const canvas = canvasRef.current;
-      const ctx = ctxRef.current;
-
-      ctx.clearRect(
-        0,
-        0,
-        canvas.width,
-        canvas.height
-      );
-
-      // Draw completed elements
-      elements.forEach((item) => {
-        drawElement(ctx, item);
-      });
-
-      // Draw current eraser stroke
-      drawElement(ctx, element);
+      eraseElement(point);
 
       return;
     }
 
-    // ========================================
-    // SHAPE PREVIEW
-    // ========================================
+    // -----------------------------------------------
+    // PENCIL
+    // -----------------------------------------------
 
-    const startX =
-      startPointRef.current.x;
+    if (tool === "pencil") {
+      setPreviewElement(
+        (prev) => {
+          if (!prev) return prev;
 
-    const startY =
-      startPointRef.current.y;
+          return {
+            ...prev,
 
-    clearPreview();
-
-    let previewElement = null;
-
-    // ========================================
-    // RECTANGLE
-    // ========================================
-
-    if (tool === "rectangle") {
-      previewElement = {
-        type: "rectangle",
-
-        x: startX,
-
-        y: startY,
-
-        width: offsetX - startX,
-
-        height: offsetY - startY,
-
-        color: color,
-
-        lineWidth: brushSize,
-      };
-    }
-
-    // ========================================
-    // LINE
-    // ========================================
-
-    else if (tool === "line") {
-      previewElement = {
-        type: "line",
-
-        startX: startX,
-
-        startY: startY,
-
-        endX: offsetX,
-
-        endY: offsetY,
-
-        color: color,
-
-        lineWidth: brushSize,
-      };
-    }
-
-    // ========================================
-    // CIRCLE
-    // ========================================
-
-    else if (tool === "circle") {
-      const radius = Math.sqrt(
-        Math.pow(
-          offsetX - startX,
-          2
-        ) +
-        Math.pow(
-          offsetY - startY,
-          2
-        )
+            points: [
+              ...prev.points,
+              point,
+            ],
+          };
+        }
       );
-
-      previewElement = {
-        type: "circle",
-
-        x: startX,
-
-        y: startY,
-
-        radius: radius,
-
-        color: color,
-
-        lineWidth: brushSize,
-      };
     }
 
-    // Draw preview
+    // -----------------------------------------------
+    // RECTANGLE
+    // -----------------------------------------------
+
+    if (
+      tool === "rectangle"
+    ) {
+      setPreviewElement(
+        (prev) => {
+          if (!prev) return prev;
+
+          return {
+            ...prev,
+
+            width:
+              point.x -
+              startPoint.current.x,
+
+            height:
+              point.y -
+              startPoint.current.y,
+          };
+        }
+      );
+    }
+
+    // -----------------------------------------------
+    // CIRCLE
+    // -----------------------------------------------
+
+    if (
+      tool === "circle"
+    ) {
+      setPreviewElement(
+        (prev) => {
+          if (!prev) return prev;
+
+          return {
+            ...prev,
+
+            width:
+              point.x -
+              startPoint.current.x,
+
+            height:
+              point.y -
+              startPoint.current.y,
+          };
+        }
+      );
+    }
+
+    // -----------------------------------------------
+    // LINE
+    // -----------------------------------------------
+
+    if (tool === "line") {
+      setPreviewElement(
+        (prev) => {
+          if (!prev) return prev;
+
+          return {
+            ...prev,
+
+            endX: point.x,
+
+            endY: point.y,
+          };
+        }
+      );
+    }
+  };
+
+  // ==================================================
+  // MOUSE UP
+  // ==================================================
+
+  const handleMouseUp = () => {
+    // Stop panning
+    if (isPanning.current) {
+      stopPanning();
+
+      return;
+    }
+
+    if (!isDrawing) {
+      return;
+    }
+
+    // Eraser
+    if (tool === "eraser") {
+      setIsDrawing(false);
+
+      return;
+    }
+
     if (previewElement) {
-      drawElement(
-        previewCtxRef.current,
-        previewElement
-      );
-    }
-  };
+      setElements((prev) => [
+        ...prev,
+        previewElement,
+      ]);
 
-  // ==========================================
-  // STOP DRAWING
-  // ==========================================
-
-  const stopDrawing = (e) => {
-    if (!isDrawing) {
-      return;
+      // New action removes redo history
+      setRedoStack([]);
     }
 
-    const { offsetX, offsetY } =
-      e.nativeEvent;
-
-    // ========================================
-    // PENCIL
-    // ========================================
-
-    if (tool === "pencil") {
-      const element =
-        activeElementRef.current;
-
-      if (element) {
-        addElement(element);
-      }
-
-      activeElementRef.current = null;
-
-      setIsDrawing(false);
-
-      return;
-    }
-
-    // ========================================
-    // ERASER
-    // ========================================
-
-    if (tool === "eraser") {
-      const element =
-        activeElementRef.current;
-
-      if (element) {
-        addElement(element);
-      }
-
-      activeElementRef.current = null;
-
-      setIsDrawing(false);
-
-      return;
-    }
-
-    // ========================================
-    // SHAPES
-    // ========================================
-
-    const startX =
-      startPointRef.current.x;
-
-    const startY =
-      startPointRef.current.y;
-
-    let element = null;
-
-    // ========================================
-    // RECTANGLE
-    // ========================================
-
-    if (tool === "rectangle") {
-      element = {
-        id: crypto.randomUUID(),
-
-        type: "rectangle",
-
-        x: startX,
-
-        y: startY,
-
-        width: offsetX - startX,
-
-        height: offsetY - startY,
-
-        color: color,
-
-        lineWidth: brushSize,
-      };
-    }
-
-    // ========================================
-    // LINE
-    // ========================================
-
-    else if (tool === "line") {
-      element = {
-        id: crypto.randomUUID(),
-
-        type: "line",
-
-        startX: startX,
-
-        startY: startY,
-
-        endX: offsetX,
-
-        endY: offsetY,
-
-        color: color,
-
-        lineWidth: brushSize,
-      };
-    }
-
-    // ========================================
-    // CIRCLE
-    // ========================================
-
-    else if (tool === "circle") {
-      const radius = Math.sqrt(
-        Math.pow(
-          offsetX - startX,
-          2
-        ) +
-        Math.pow(
-          offsetY - startY,
-          2
-        )
-      );
-
-      element = {
-        id: crypto.randomUUID(),
-
-        type: "circle",
-
-        x: startX,
-
-        y: startY,
-
-        radius: radius,
-
-        color: color,
-
-        lineWidth: brushSize,
-      };
-    }
-
-    // Add element to history
-    if (element) {
-      addElement(element);
-    }
-
-    clearPreview();
+    setPreviewElement(null);
 
     setIsDrawing(false);
   };
 
-  // ==========================================
-  // TOOL CHANGE
-  // ==========================================
+  // ==================================================
+  // PAN
+  // ==================================================
 
-  const changeTool = (newTool) => {
-    setTool(newTool);
+  const startPanning = (e) => {
+    isPanning.current = true;
 
-    clearPreview();
-
-    activeElementRef.current = null;
-
-    setIsDrawing(false);
-  };
-
-  // ==========================================
-  // KEYBOARD SHORTCUTS
-  // ==========================================
-
-  useEffect(() => {
-    const handleKeyboard = (e) => {
-      // Ctrl + Z
-      if (
-        e.ctrlKey &&
-        !e.shiftKey &&
-        e.key.toLowerCase() === "z"
-      ) {
-        e.preventDefault();
-
-        undo();
-      }
-
-      // Ctrl + Y
-      if (
-        e.ctrlKey &&
-        e.key.toLowerCase() === "y"
-      ) {
-        e.preventDefault();
-
-        redo();
-      }
-
-      // Ctrl + Shift + Z
-      if (
-        e.ctrlKey &&
-        e.shiftKey &&
-        e.key.toLowerCase() === "z"
-      ) {
-        e.preventDefault();
-
-        redo();
-      }
+    panStart.current = {
+      x: e.clientX,
+      y: e.clientY,
     };
 
-    window.addEventListener(
-      "keydown",
-      handleKeyboard
+    cameraStart.current = {
+      x: camera.x,
+      y: camera.y,
+    };
+  };
+
+  const stopPanning = () => {
+    isPanning.current = false;
+  };
+
+  // ==================================================
+  // ZOOM
+  // ==================================================
+
+  const handleWheel = (e) => {
+    e.preventDefault();
+
+    // -----------------------------------------------
+    // CTRL + SCROLL = ZOOM
+    // -----------------------------------------------
+
+    if (
+      e.ctrlKey ||
+      e.metaKey
+    ) {
+      const zoomFactor =
+        e.deltaY > 0
+          ? 0.9
+          : 1.1;
+
+      const newZoom =
+        Math.min(
+          Math.max(
+            camera.zoom *
+              zoomFactor,
+            0.2
+          ),
+          5
+        );
+
+      const rect =
+        canvasRef.current.getBoundingClientRect();
+
+      const mouseX =
+        e.clientX -
+        rect.left;
+
+      const mouseY =
+        e.clientY -
+        rect.top;
+
+      // World position before zoom
+      const worldX =
+        (mouseX - camera.x) /
+        camera.zoom;
+
+      const worldY =
+        (mouseY - camera.y) /
+        camera.zoom;
+
+      // Keep mouse position fixed
+      const newCameraX =
+        mouseX -
+        worldX * newZoom;
+
+      const newCameraY =
+        mouseY -
+        worldY * newZoom;
+
+      setCamera({
+        x: newCameraX,
+
+        y: newCameraY,
+
+        zoom: newZoom,
+      });
+
+      return;
+    }
+
+    // -----------------------------------------------
+    // NORMAL SCROLL = PAN
+    // -----------------------------------------------
+
+    setCamera((prev) => ({
+      ...prev,
+
+      x:
+        prev.x -
+        e.deltaX,
+
+      y:
+        prev.y -
+        e.deltaY,
+    }));
+  };
+
+  // ==================================================
+  // ERASER
+  // ==================================================
+
+  const eraseElement = (
+    point
+  ) => {
+    const threshold =
+      15 / camera.zoom;
+
+    let foundIndex = -1;
+
+    for (
+      let i =
+        elements.length - 1;
+      i >= 0;
+      i--
+    ) {
+      const element =
+        elements[i];
+
+      // -----------------------------------------------
+      // PENCIL
+      // -----------------------------------------------
+
+      if (
+        element.type ===
+        "pencil"
+      ) {
+        const found =
+          element.points.some(
+            (p) => {
+              return (
+                Math.abs(
+                  p.x -
+                    point.x
+                ) <
+                  threshold &&
+                Math.abs(
+                  p.y -
+                    point.y
+                ) <
+                  threshold
+              );
+            }
+          );
+
+        if (found) {
+          foundIndex = i;
+
+          break;
+        }
+      }
+
+      // -----------------------------------------------
+      // RECTANGLE
+      // -----------------------------------------------
+
+      if (
+        element.type ===
+        "rectangle"
+      ) {
+        const left =
+          Math.min(
+            element.x,
+            element.x +
+              element.width
+          );
+
+        const right =
+          Math.max(
+            element.x,
+            element.x +
+              element.width
+          );
+
+        const top =
+          Math.min(
+            element.y,
+            element.y +
+              element.height
+          );
+
+        const bottom =
+          Math.max(
+            element.y,
+            element.y +
+              element.height
+          );
+
+        const nearLeft =
+          Math.abs(
+            point.x -
+              left
+          ) <
+          threshold;
+
+        const nearRight =
+          Math.abs(
+            point.x -
+              right
+          ) <
+          threshold;
+
+        const nearTop =
+          Math.abs(
+            point.y -
+              top
+          ) <
+          threshold;
+
+        const nearBottom =
+          Math.abs(
+            point.y -
+              bottom
+          ) <
+          threshold;
+
+        if (
+          (nearLeft ||
+            nearRight) &&
+          point.y >=
+            top -
+              threshold &&
+          point.y <=
+            bottom +
+              threshold
+        ) {
+          foundIndex = i;
+
+          break;
+        }
+
+        if (
+          (nearTop ||
+            nearBottom) &&
+          point.x >=
+            left -
+              threshold &&
+          point.x <=
+            right +
+              threshold
+        ) {
+          foundIndex = i;
+
+          break;
+        }
+      }
+
+      // -----------------------------------------------
+      // CIRCLE
+      // -----------------------------------------------
+
+      if (
+        element.type ===
+        "circle"
+      ) {
+        const radius =
+          Math.sqrt(
+            Math.pow(
+              element.width,
+              2
+            ) +
+              Math.pow(
+                element.height,
+                2
+              )
+          );
+
+        const distance =
+          Math.sqrt(
+            Math.pow(
+              point.x -
+                element.x,
+              2
+            ) +
+              Math.pow(
+                point.y -
+                  element.y,
+                2
+              )
+          );
+
+        if (
+          Math.abs(
+            distance -
+              radius
+          ) < threshold
+        ) {
+          foundIndex = i;
+
+          break;
+        }
+      }
+
+      // -----------------------------------------------
+      // LINE
+      // -----------------------------------------------
+
+      if (
+        element.type ===
+        "line"
+      ) {
+        const distance =
+          pointToLineDistance(
+            point.x,
+            point.y,
+            element.startX,
+            element.startY,
+            element.endX,
+            element.endY
+          );
+
+        if (
+          distance <
+          threshold
+        ) {
+          foundIndex = i;
+
+          break;
+        }
+      }
+    }
+
+    if (foundIndex !== -1) {
+      const deletedElement =
+        elements[foundIndex];
+
+      setElements(
+        (prev) =>
+          prev.filter(
+            (_, index) =>
+              index !==
+              foundIndex
+          )
+      );
+
+      setRedoStack(
+        (prev) => [
+          ...prev,
+          deletedElement,
+        ]
+      );
+    }
+  };
+
+  // ==================================================
+  // POINT TO LINE DISTANCE
+  // ==================================================
+
+  const pointToLineDistance = (
+    px,
+    py,
+    x1,
+    y1,
+    x2,
+    y2
+  ) => {
+    const A =
+      px - x1;
+
+    const B =
+      py - y1;
+
+    const C =
+      x2 - x1;
+
+    const D =
+      y2 - y1;
+
+    const dot =
+      A * C +
+      B * D;
+
+    const lenSq =
+      C * C +
+      D * D;
+
+    let param = -1;
+
+    if (lenSq !== 0) {
+      param =
+        dot / lenSq;
+    }
+
+    let xx;
+    let yy;
+
+    if (param < 0) {
+      xx = x1;
+      yy = y1;
+    } else if (
+      param > 1
+    ) {
+      xx = x2;
+      yy = y2;
+    } else {
+      xx =
+        x1 +
+        param * C;
+
+      yy =
+        y1 +
+        param * D;
+    }
+
+    return Math.sqrt(
+      Math.pow(
+        px - xx,
+        2
+      ) +
+        Math.pow(
+          py - yy,
+          2
+        )
+    );
+  };
+
+  // ==================================================
+  // UNDO
+  // ==================================================
+
+  const undo = () => {
+    if (
+      elements.length === 0
+    ) {
+      return;
+    }
+
+    const lastElement =
+      elements[
+        elements.length - 1
+      ];
+
+    setElements(
+      (prev) =>
+        prev.slice(
+          0,
+          prev.length - 1
+        )
     );
 
-    return () => {
-      window.removeEventListener(
-        "keydown",
-        handleKeyboard
-      );
-    };
-  }, [undoStack, redoStack, elements]);
+    setRedoStack(
+      (prev) => [
+        ...prev,
+        lastElement,
+      ]
+    );
+  };
 
-  
-  const handleClear = async () => {
-  const confirmed = window.confirm(
-    "Are you sure you want to clear this board?"
-  );
+  // ==================================================
+  // REDO
+  // ==================================================
 
-  if (!confirmed) return;
-
-  try {
-    const response = await clearDrawing(id);
-
-    if (response.data.success) {
-      setElements([]);
-
-      const canvas = canvasRef.current;
-      const previewCanvas = previewCanvasRef.current;
-
-      const ctx = canvas.getContext("2d");
-      const previewCtx = previewCanvas.getContext("2d");
-
-      ctx.clearRect(0, 0, canvas.width, canvas.height);
-      previewCtx.clearRect(
-        0,
-        0,
-        previewCanvas.width,
-        previewCanvas.height
-      );
-
-      alert("Board cleared successfully!");
+  const redo = () => {
+    if (
+      redoStack.length === 0
+    ) {
+      return;
     }
-  } catch (error) {
-    console.error("Failed to clear board:", error);
 
-    alert("Failed to clear board");
-  }
-};
+    const element =
+      redoStack[
+        redoStack.length - 1
+      ];
+
+    setRedoStack(
+      (prev) =>
+        prev.slice(
+          0,
+          prev.length - 1
+        )
+    );
+
+    setElements(
+      (prev) => [
+        ...prev,
+        element,
+      ]
+    );
+  };
+
+  // ==================================================
+  // CLEAR
+  // ==================================================
+
+  const clearCanvas = () => {
+    if (
+      elements.length === 0
+    ) {
+      return;
+    }
+
+    setRedoStack(
+      (prev) => [
+        ...prev,
+        ...elements,
+      ]
+    );
+
+    setElements([]);
+  };
+
+  // ==================================================
+  // RESET VIEW
+  // ==================================================
+
+  const resetView = () => {
+    setCamera({
+      x: 0,
+      y: 0,
+      zoom: 1,
+    });
+  };
+
+  // ==================================================
+  // SELECT TOOL
+  // ==================================================
+
+  const selectTool = (
+    selectedTool
+  ) => {
+    setTool(selectedTool);
+  };
+
+  // ==================================================
+  // RENDER
+  // ==================================================
 
   return (
-    <div
-      style={{
-        height: "100vh",
-        display: "flex",
-        flexDirection: "column",
-        overflow: "hidden",
-      }}
-    >
+    <div className="fixed inset-0 flex flex-col bg-slate-100 overflow-hidden">
 
-      {/* ======================================
-          NAVBAR
-      ======================================= */}
+      {/* ==================================================
+          HEADER
+      ================================================== */}
 
-      <header
-        style={{
-          height: "60px",
+      <header className="h-[64px] shrink-0 bg-white border-b border-slate-200 flex items-center justify-between px-6 z-30">
 
-          background: "#1f2937",
+        {/* LEFT */}
 
-          color: "white",
+        <div className="flex items-center gap-3">
 
-          display: "flex",
+          <button
+            onClick={() =>
+              window.history.back()
+            }
+            className="text-slate-500 hover:text-slate-900 text-xl"
+          >
+            ←
+          </button>
 
-          justifyContent: "space-between",
+          <div>
 
-          alignItems: "center",
+            <h1 className="font-semibold text-slate-900">
+              Collaborative Whiteboard
+            </h1>
 
-          padding: "0 20px",
+            <p className="text-xs text-slate-400">
+              Board ID: {id}
+            </p>
 
-          flexShrink: 0,
-        }}
-      >
-        <h2>
-          Collaborative Whiteboard
-        </h2>
+          </div>
 
-        <span>
-          Board ID: {id}
-        </span>
+        </div>
+
+        {/* RIGHT */}
+
+        <div className="flex items-center gap-3">
+
+          {/* SAVE STATUS */}
+
+          <div
+            className={`text-sm ${
+              saveStatus ===
+              "Saved"
+                ? "text-green-600"
+                : saveStatus ===
+                  "Saving..."
+                ? "text-blue-600"
+                : saveStatus ===
+                  "Save failed"
+                ? "text-red-600"
+                : "text-orange-600"
+            }`}
+          >
+            {saveStatus}
+          </div>
+
+          {/* RESET VIEW */}
+
+          <button
+            onClick={resetView}
+            className="px-3 py-2 border border-slate-200 rounded-lg text-sm hover:bg-slate-50 bg-white"
+          >
+            Reset View
+          </button>
+
+          {/* SAVE */}
+
+          <button
+            onClick={() =>
+              saveDrawing(elements)
+            }
+            disabled={
+              saveStatus ===
+              "Saving..."
+            }
+            className="px-5 py-2 bg-indigo-600 text-white rounded-lg hover:bg-indigo-700 disabled:opacity-50"
+          >
+            {saveStatus ===
+            "Saving..."
+              ? "Saving..."
+              : "Save"}
+          </button>
+
+        </div>
+
       </header>
 
-      {/* ======================================
+      {/* ==================================================
           TOOLBAR
-      ======================================= */}
+      ================================================== */}
 
-      <div
-        style={{
-          height: "70px",
-
-          display: "flex",
-
-          alignItems: "center",
-
-          gap: "10px",
-
-          padding: "10px 20px",
-
-          borderBottom: "1px solid #ddd",
-
-          background: "#f8f8f8",
-
-          flexShrink: 0,
-        }}
-      >
-
-        
-
-        <button onClick={handleSave}>
-                  Save
-        </button>
-
-        <button onClick={handleClear}>
-                Clear
-        </button>
-
-        {/* UNDO */}
-        <button
-          onClick={undo}
-          disabled={undoStack.length === 0}
-          style={{
-            padding: "8px 12px",
-            cursor:
-              undoStack.length === 0
-                ? "not-allowed"
-                : "pointer",
-          }}
-        >
-          Undo
-        </button>
-
-        {/* REDO */}
-
-        <button
-          onClick={redo}
-          disabled={redoStack.length === 0}
-          style={{
-            padding: "8px 12px",
-            cursor:
-              redoStack.length === 0
-                ? "not-allowed"
-                : "pointer",
-          }}
-        >
-          Redo
-        </button>
+      <div className="absolute top-[80px] left-1/2 -translate-x-1/2 z-20 bg-white border border-slate-200 shadow-lg rounded-xl px-3 py-2 flex items-center gap-2">
 
         {/* PENCIL */}
 
         <button
           onClick={() =>
-            changeTool("pencil")
+            selectTool(
+              "pencil"
+            )
           }
-          style={{
-            padding: "8px 12px",
-
-            background:
-              tool === "pencil"
-                ? "#d1d5db"
-                : "white",
-
-            cursor: "pointer",
-          }}
+          className={`px-4 py-2 rounded-lg text-sm ${
+            tool === "pencil"
+              ? "bg-indigo-100 text-indigo-600"
+              : "hover:bg-slate-100"
+          }`}
         >
-          Pencil
+          ✎ Pencil
         </button>
 
         {/* RECTANGLE */}
 
         <button
           onClick={() =>
-            changeTool("rectangle")
+            selectTool(
+              "rectangle"
+            )
           }
-          style={{
-            padding: "8px 12px",
-
-            background:
-              tool === "rectangle"
-                ? "#d1d5db"
-                : "white",
-
-            cursor: "pointer",
-          }}
+          className={`px-4 py-2 rounded-lg text-sm ${
+            tool === "rectangle"
+              ? "bg-indigo-100 text-indigo-600"
+              : "hover:bg-slate-100"
+          }`}
         >
-          Rectangle
+          □ Rectangle
         </button>
 
         {/* CIRCLE */}
 
         <button
           onClick={() =>
-            changeTool("circle")
+            selectTool(
+              "circle"
+            )
           }
-          style={{
-            padding: "8px 12px",
-
-            background:
-              tool === "circle"
-                ? "#d1d5db"
-                : "white",
-
-            cursor: "pointer",
-          }}
+          className={`px-4 py-2 rounded-lg text-sm ${
+            tool === "circle"
+              ? "bg-indigo-100 text-indigo-600"
+              : "hover:bg-slate-100"
+          }`}
         >
-          Circle
+          ○ Circle
         </button>
 
         {/* LINE */}
 
         <button
           onClick={() =>
-            changeTool("line")
+            selectTool("line")
           }
-          style={{
-            padding: "8px 12px",
-
-            background:
-              tool === "line"
-                ? "#d1d5db"
-                : "white",
-
-            cursor: "pointer",
-          }}
+          className={`px-4 py-2 rounded-lg text-sm ${
+            tool === "line"
+              ? "bg-indigo-100 text-indigo-600"
+              : "hover:bg-slate-100"
+          }`}
         >
-          Line
+          ／ Line
         </button>
 
         {/* ERASER */}
 
         <button
           onClick={() =>
-            changeTool("eraser")
+            selectTool(
+              "eraser"
+            )
           }
-          style={{
-            padding: "8px 12px",
-
-            background:
-              tool === "eraser"
-                ? "#d1d5db"
-                : "white",
-
-            cursor: "pointer",
-          }}
+          className={`px-4 py-2 rounded-lg text-sm ${
+            tool === "eraser"
+              ? "bg-red-100 text-red-600"
+              : "hover:bg-slate-100"
+          }`}
         >
-          Eraser
+          ⌫ Eraser
         </button>
+
+        <div className="h-8 w-px bg-slate-200 mx-1" />
 
         {/* COLOR */}
 
-        <label>
-          Color
-        </label>
+        <div className="flex items-center gap-2">
 
-        <input
-          type="color"
-          value={color}
-          onChange={(e) =>
-            setColor(e.target.value)
+          <span className="text-xs text-slate-500">
+            Color
+          </span>
+
+          <input
+            type="color"
+            value={color}
+            onChange={(e) =>
+              setColor(
+                e.target.value
+              )
+            }
+            className="w-9 h-9 cursor-pointer"
+          />
+
+        </div>
+
+        {/* SIZE */}
+
+        <div className="flex items-center gap-2">
+
+          <span className="text-xs text-slate-500">
+            Size
+          </span>
+
+          <input
+            type="range"
+            min="1"
+            max="20"
+            value={
+              brushSize
+            }
+            onChange={(e) =>
+              setBrushSize(
+                Number(
+                  e.target.value
+                )
+              )
+            }
+          />
+
+          <span className="text-sm text-slate-500 w-6">
+            {brushSize}
+          </span>
+
+        </div>
+
+        <div className="h-8 w-px bg-slate-200 mx-1" />
+
+        {/* UNDO */}
+
+        <button
+          onClick={undo}
+          disabled={
+            elements.length ===
+            0
           }
-        />
+          className="px-3 py-2 rounded-lg hover:bg-slate-100 disabled:opacity-30 text-lg"
+          title="Undo (Ctrl + Z)"
+        >
+          ↶
+        </button>
 
-        {/* BRUSH SIZE */}
+        {/* REDO */}
 
-        <label>
-          Brush Size
-        </label>
-
-        <input
-          type="range"
-          min="1"
-          max="20"
-          value={brushSize}
-          onChange={(e) =>
-            setBrushSize(
-              Number(e.target.value)
-            )
+        <button
+          onClick={redo}
+          disabled={
+            redoStack.length ===
+            0
           }
-        />
+          className="px-3 py-2 rounded-lg hover:bg-slate-100 disabled:opacity-30 text-lg"
+          title="Redo (Ctrl + Y)"
+        >
+          ↷
+        </button>
 
-        <span>
-          {brushSize}px
-        </span>
+        <div className="h-8 w-px bg-slate-200 mx-1" />
+
+        {/* CLEAR */}
+
+        <button
+          onClick={
+            clearCanvas
+          }
+          className="px-3 py-2 text-red-500 rounded-lg hover:bg-red-50 text-sm"
+        >
+          Clear
+        </button>
+
       </div>
 
-      {/* ======================================
-          CANVAS AREA
-      ======================================= */}
+      {/* ==================================================
+          CANVAS
+      ================================================== */}
 
-      <div
-        style={{
-          flex: 1,
-
-          display: "flex",
-
-          justifyContent: "center",
-
-          alignItems: "center",
-
-          background: "#ececec",
-
-          overflow: "auto",
-
-          position: "relative",
-        }}
-      >
-
-        {/* MAIN CANVAS */}
+      <main className="flex-1 relative overflow-hidden">
 
         <canvas
           ref={canvasRef}
-          width={1200}
-          height={700}
-          style={{
-            background: "white",
-
-            border: "1px solid #ccc",
-
-            position: "absolute",
-
-            cursor: "crosshair",
-          }}
+          onMouseDown={
+            handleMouseDown
+          }
+          onMouseMove={
+            handleMouseMove
+          }
+          onMouseUp={
+            handleMouseUp
+          }
+          onMouseLeave={
+            handleMouseUp
+          }
+          onWheel={
+            handleWheel
+          }
+          className={`absolute inset-0 ${
+            tool === "eraser"
+              ? "cursor-cell"
+              : spacePressed.current
+              ? "cursor-grab"
+              : "cursor-crosshair"
+          }`}
         />
 
-        {/* PREVIEW CANVAS */}
+        {/* ==================================================
+            ZOOM
+        ================================================== */}
 
-        <canvas
-          ref={previewCanvasRef}
-          width={1200}
-          height={700}
-          onMouseDown={startDrawing}
-          onMouseMove={draw}
-          onMouseUp={stopDrawing}
-          onMouseLeave={stopDrawing}
-          style={{
-            background: "transparent",
+        <div className="absolute bottom-5 right-5 bg-white border border-slate-200 shadow-md rounded-lg px-3 py-2 text-sm text-slate-600">
+          {Math.round(
+            camera.zoom * 100
+          )}
+          %
+        </div>
 
-            border:
-              "1px solid transparent",
+        {/* ==================================================
+            ELEMENT COUNT
+        ================================================== */}
 
-            position: "absolute",
+        <div className="absolute bottom-5 left-5 bg-white border border-slate-200 shadow-md rounded-lg px-3 py-2 text-sm text-slate-500">
+          Elements:{" "}
+          {elements.length}
+        </div>
 
-            cursor: "crosshair",
-          }}
-        />
+        {/* ==================================================
+            HELP
+        ================================================== */}
 
-      </div>
+        <div className="absolute bottom-5 left-1/2 -translate-x-1/2 bg-white border border-slate-200 shadow-md rounded-lg px-4 py-2 text-xs text-slate-500">
+          Ctrl + Scroll =
+          Zoom &nbsp; • &nbsp;
+          Space + Drag =
+          Pan &nbsp; • &nbsp;
+          Ctrl + Z = Undo
+          &nbsp; • &nbsp;
+          Ctrl + Y = Redo
+          &nbsp; • &nbsp;
+          Ctrl + S = Save
+        </div>
+
+      </main>
     </div>
   );
 }

@@ -3,47 +3,60 @@ import User from "../models/user.model.js";
 
 export const verifyToken = async (req, res, next) => {
   try {
-    // Get token from Authorization header
-    const authHeader = req.headers.authorization;
+    // Get token from HTTP-only cookie
+    const token = req.cookies?.token;
 
-    if (!authHeader) {
-      return res.status(401).json({
-        success: false,
-        message: "Authorization header missing",
-      });
-    }
-
-    // Expected format: Bearer <token>
-    const token = authHeader.split(" ")[1];
-
+    // No token
     if (!token) {
       return res.status(401).json({
         success: false,
-        message: "Token missing",
+        message: "Authentication required",
       });
     }
 
-    // Verify the token
-    const decoded = jwt.verify(token, process.env.JWT_SECRET);
+    // Verify JWT
+    const decoded = jwt.verify(
+      token,
+      process.env.JWT_SECRET
+    );
 
-    // Find the user
-    const user = await User.findById(decoded.id).select("-password");
+    // Find user
+    const user = await User.findById(decoded.userId).select(
+      "-password"
+    );
 
     if (!user) {
-      return res.status(404).json({
+      return res.status(401).json({
         success: false,
-        message: "User not found",
+        message: "User no longer exists",
       });
     }
 
-    // Attach user to the request
+    // Attach user to request
     req.user = user;
 
     next();
+
   } catch (error) {
-    return res.status(401).json({
+    console.error("Authentication error:", error.message);
+
+    if (error.name === "TokenExpiredError") {
+      return res.status(401).json({
+        success: false,
+        message: "Token expired",
+      });
+    }
+
+    if (error.name === "JsonWebTokenError") {
+      return res.status(401).json({
+        success: false,
+        message: "Invalid token",
+      });
+    }
+
+    return res.status(500).json({
       success: false,
-      message: "Invalid or expired token",
+      message: "Authentication failed",
     });
   }
 };
