@@ -1,3 +1,4 @@
+
 import { useEffect, useMemo, useState } from "react";
 import { useNavigate } from "react-router-dom";
 
@@ -6,6 +7,8 @@ import {
   createBoard,
   deleteBoard,
 } from "../api/board";
+
+import { logoutUser } from "../api/auth";
 
 function Dashboard() {
   const navigate = useNavigate();
@@ -23,6 +26,8 @@ function Dashboard() {
 
   const [activeMenu, setActiveMenu] = useState("Dashboard");
   const [search, setSearch] = useState("");
+
+  const [loggingOut, setLoggingOut] = useState(false);
 
   // =====================================================
   // FAVORITES
@@ -123,23 +128,6 @@ function Dashboard() {
     try {
       setCreating(true);
 
-      /*
-        IMPORTANT:
-
-        Backend expects:
-
-        {
-          title: "...",
-          ispublic: true/false
-        }
-
-        NOT:
-
-        {
-          name: "..."
-        }
-      */
-
       const response = await createBoard({
         title: title,
         ispublic: false,
@@ -151,7 +139,6 @@ function Dashboard() {
         setBoardTitle("");
         setShowModal(false);
 
-        // Reload boards from backend
         await loadBoards();
       }
     } catch (error) {
@@ -189,17 +176,14 @@ function Dashboard() {
     try {
       await deleteBoard(id);
 
-      // Remove board from UI
       setBoards((prev) =>
         prev.filter((board) => board._id !== id)
       );
 
-      // Remove from favorites
       setFavorites((prev) =>
         prev.filter((boardId) => boardId !== id)
       );
 
-      // Remove from recent
       setRecentBoards((prev) =>
         prev.filter((boardId) => boardId !== id)
       );
@@ -252,13 +236,40 @@ function Dashboard() {
   };
 
   // =====================================================
+  // LOGOUT
+  // =====================================================
+
+  const handleLogout = async () => {
+    try {
+      setLoggingOut(true);
+
+      await logoutUser();
+
+      // Clear local dashboard preferences
+      // (these are not authentication tokens)
+      localStorage.removeItem("recentBoards");
+
+      navigate("/", { replace: true });
+
+    } catch (error) {
+      console.error("Logout failed:", error);
+
+      alert(
+        error.response?.data?.message ||
+          "Unable to logout. Please try again."
+      );
+
+    } finally {
+      setLoggingOut(false);
+    }
+  };
+
+  // =====================================================
   // SEARCH
   // =====================================================
 
   const filteredBoards = useMemo(() => {
-    const query = search
-      .trim()
-      .toLowerCase();
+    const query = search.trim().toLowerCase();
 
     if (!query) {
       return boards;
@@ -346,9 +357,7 @@ function Dashboard() {
   return (
     <div className="min-h-screen bg-slate-50">
 
-      {/* =================================================
-          TOP NAVBAR
-      ================================================= */}
+      {/* TOP NAVBAR */}
 
       <header className="fixed left-0 right-0 top-0 z-40 h-16 border-b border-slate-200 bg-white">
 
@@ -382,10 +391,7 @@ function Dashboard() {
               onClick={() => setShowModal(true)}
               className="flex items-center gap-2 rounded-lg bg-indigo-600 px-4 py-2 text-sm font-semibold text-white transition hover:bg-indigo-700"
             >
-              <span className="text-lg">
-                +
-              </span>
-
+              <span className="text-lg">+</span>
               New Board
             </button>
 
@@ -415,9 +421,7 @@ function Dashboard() {
 
       </header>
 
-      {/* =================================================
-          SIDEBAR
-      ================================================= */}
+      {/* SIDEBAR */}
 
       <aside className="fixed bottom-0 left-0 top-16 hidden w-56 border-r border-slate-200 bg-white md:block">
 
@@ -438,10 +442,7 @@ function Dashboard() {
                   onClick={() => {
                     setActiveMenu(item.name);
 
-                    if (
-                      item.name ===
-                      "Dashboard"
-                    ) {
+                    if (item.name === "Dashboard") {
                       setSearch("");
                     }
                   }}
@@ -458,17 +459,14 @@ function Dashboard() {
 
                   {item.name}
 
-                  {item.name ===
-                    "My Boards" && (
+                  {item.name === "My Boards" && (
                     <span className="ml-auto rounded-full bg-slate-100 px-2 py-0.5 text-xs text-slate-500">
                       {boards.length}
                     </span>
                   )}
 
-                  {item.name ===
-                    "Favorites" &&
-                    favorites.length >
-                      0 && (
+                  {item.name === "Favorites" &&
+                    favorites.length > 0 && (
                       <span className="ml-auto rounded-full bg-amber-100 px-2 py-0.5 text-xs text-amber-600">
                         {favorites.length}
                       </span>
@@ -489,31 +487,27 @@ function Dashboard() {
           <div className="mt-auto px-4 py-6">
 
             <button
-              onClick={() =>
-                setActiveMenu(
-                  "Settings"
-                )
-              }
+              onClick={() => setActiveMenu("Settings")}
               className="flex w-full items-center gap-3 rounded-lg px-3 py-2.5 text-sm font-medium text-slate-600 transition hover:bg-slate-50"
             >
               <span className="flex w-6 justify-center">
                 ⚙
               </span>
-
               Settings
             </button>
 
+            {/* LOGOUT BUTTON */}
+
             <button
-              onClick={() => {
-                navigate("/");
-              }}
-              className="mt-1 flex w-full items-center gap-3 rounded-lg px-3 py-2.5 text-sm font-medium text-slate-600 transition hover:bg-red-50 hover:text-red-600"
+              onClick={handleLogout}
+              disabled={loggingOut}
+              className="mt-1 flex w-full items-center gap-3 rounded-lg px-3 py-2.5 text-sm font-medium text-slate-600 transition hover:bg-red-50 hover:text-red-600 disabled:cursor-not-allowed disabled:opacity-60"
             >
               <span className="flex w-6 justify-center">
                 ↪
               </span>
 
-              Logout
+              {loggingOut ? "Logging out..." : "Logout"}
             </button>
 
           </div>
@@ -522,72 +516,59 @@ function Dashboard() {
 
       </aside>
 
-      {/* =================================================
-          MAIN CONTENT
-      ================================================= */}
+      {/* MAIN CONTENT */}
 
       <main className="pt-16 md:ml-56">
 
         <div className="mx-auto max-w-6xl px-6 py-10">
 
-          {/* =================================================
-              HEADER
-          ================================================= */}
+          {/* HEADER */}
 
           <div className="mb-8">
 
             <h1 className="text-3xl font-bold tracking-tight text-slate-900">
-              {activeMenu ===
-                "Dashboard" &&
+
+              {activeMenu === "Dashboard" &&
                 "Welcome back 👋"}
 
-              {activeMenu ===
-                "My Boards" &&
+              {activeMenu === "My Boards" &&
                 "My Boards"}
 
-              {activeMenu ===
-                "Recent" &&
+              {activeMenu === "Recent" &&
                 "Recent Boards"}
 
-              {activeMenu ===
-                "Favorites" &&
+              {activeMenu === "Favorites" &&
                 "Favorite Boards"}
 
-              {activeMenu ===
-                "Settings" &&
+              {activeMenu === "Settings" &&
                 "Settings"}
+
             </h1>
 
             <p className="mt-2 text-slate-500">
-              {activeMenu ===
-                "Dashboard" &&
+
+              {activeMenu === "Dashboard" &&
                 "Create, manage and collaborate on your whiteboards."}
 
-              {activeMenu ===
-                "My Boards" &&
+              {activeMenu === "My Boards" &&
                 "Manage all your whiteboards."}
 
-              {activeMenu ===
-                "Recent" &&
+              {activeMenu === "Recent" &&
                 "Quickly access the boards you opened recently."}
 
-              {activeMenu ===
-                "Favorites" &&
+              {activeMenu === "Favorites" &&
                 "Your favorite whiteboards."}
 
-              {activeMenu ===
-                "Settings" &&
+              {activeMenu === "Settings" &&
                 "Manage your workspace settings."}
+
             </p>
 
           </div>
 
-          {/* =================================================
-              DASHBOARD STATISTICS
-          ================================================= */}
+          {/* DASHBOARD STATISTICS */}
 
-          {activeMenu ===
-            "Dashboard" && (
+          {activeMenu === "Dashboard" && (
 
             <div className="mb-8 grid gap-5 sm:grid-cols-2 lg:grid-cols-3">
 
@@ -673,12 +654,9 @@ function Dashboard() {
 
           )}
 
-          {/* =================================================
-              SEARCH + CREATE
-          ================================================= */}
+          {/* SEARCH + CREATE */}
 
-          {activeMenu !==
-            "Settings" && (
+          {activeMenu !== "Settings" && (
 
             <div className="mb-6 flex gap-3">
 
@@ -692,9 +670,7 @@ function Dashboard() {
                   type="text"
                   value={search}
                   onChange={(e) =>
-                    setSearch(
-                      e.target.value
-                    )
+                    setSearch(e.target.value)
                   }
                   placeholder="Search boards..."
                   className="w-full rounded-xl border border-slate-200 bg-white py-3 pl-11 pr-4 text-sm outline-none transition focus:border-indigo-500 focus:ring-4 focus:ring-indigo-100"
@@ -703,9 +679,7 @@ function Dashboard() {
               </div>
 
               <button
-                onClick={() =>
-                  setShowModal(true)
-                }
+                onClick={() => setShowModal(true)}
                 className="rounded-xl bg-indigo-600 px-5 py-3 text-sm font-semibold text-white transition hover:bg-indigo-700"
               >
                 + Create Board
@@ -715,41 +689,30 @@ function Dashboard() {
 
           )}
 
-          {/* =================================================
-              BOARDS SECTION
-          ================================================= */}
+          {/* BOARDS SECTION */}
 
-          {activeMenu !==
-            "Settings" && (
+          {activeMenu !== "Settings" && (
 
             <>
 
               <div className="mb-5">
 
                 <h2 className="text-xl font-bold text-slate-900">
-                  {activeMenu ===
-                    "Recent"
+                  {activeMenu === "Recent"
                     ? "Recently Opened"
-                    : activeMenu ===
-                      "Favorites"
+                    : activeMenu === "Favorites"
                     ? "Favorites"
                     : "My Boards"}
                 </h2>
 
                 <p className="mt-1 text-sm text-slate-500">
-                  {displayedBoards.length}{" "}
-                  board
-                  {displayedBoards.length !==
-                  1
-                    ? "s"
-                    : ""}
+                  {displayedBoards.length} board
+                  {displayedBoards.length !== 1 ? "s" : ""}
                 </p>
 
               </div>
 
-              {/* =================================================
-                  LOADING
-              ================================================= */}
+              {/* LOADING */}
 
               {loading && (
 
@@ -763,195 +726,167 @@ function Dashboard() {
 
               )}
 
-              {/* =================================================
-                  EMPTY STATE
-              ================================================= */}
+              {/* EMPTY STATE */}
 
-              {!loading &&
-                displayedBoards.length ===
-                  0 && (
+              {!loading && displayedBoards.length === 0 && (
 
-                  <div className="flex min-h-72 flex-col items-center justify-center rounded-xl border border-dashed border-slate-300 bg-white text-center">
+                <div className="flex min-h-72 flex-col items-center justify-center rounded-xl border border-dashed border-slate-300 bg-white text-center">
 
-                    <div className="flex h-14 w-14 items-center justify-center rounded-full bg-slate-100 text-xl">
-                      {activeMenu ===
-                      "Favorites"
-                        ? "★"
-                        : activeMenu ===
-                          "Recent"
-                        ? "◷"
-                        : "▣"}
-                    </div>
+                  <div className="flex h-14 w-14 items-center justify-center rounded-full bg-slate-100 text-xl">
 
-                    <h3 className="mt-4 font-semibold text-slate-900">
-                      {search
-                        ? "No boards found"
-                        : activeMenu ===
-                          "Favorites"
-                        ? "No favorite boards"
-                        : activeMenu ===
-                          "Recent"
-                        ? "No recent boards"
-                        : "No boards yet"}
-                    </h3>
-
-                    <p className="mt-2 text-sm text-slate-500">
-                      {search
-                        ? "Try another search."
-                        : "Create a board to get started."}
-                    </p>
-
-                    {!search &&
-                      activeMenu ===
-                        "Dashboard" && (
-
-                        <button
-                          onClick={() =>
-                            setShowModal(
-                              true
-                            )
-                          }
-                          className="mt-5 rounded-lg bg-indigo-600 px-5 py-2.5 text-sm font-semibold text-white hover:bg-indigo-700"
-                        >
-                          Create Board
-                        </button>
-
-                      )}
+                    {activeMenu === "Favorites"
+                      ? "★"
+                      : activeMenu === "Recent"
+                      ? "◷"
+                      : "▣"}
 
                   </div>
 
-                )}
+                  <h3 className="mt-4 font-semibold text-slate-900">
 
-              {/* =================================================
-                  BOARD CARDS
-              ================================================= */}
+                    {search
+                      ? "No boards found"
+                      : activeMenu === "Favorites"
+                      ? "No favorite boards"
+                      : activeMenu === "Recent"
+                      ? "No recent boards"
+                      : "No boards yet"}
 
-              {!loading &&
-                displayedBoards.length >
-                  0 && (
+                  </h3>
 
-                  <div className="grid gap-6 sm:grid-cols-2 lg:grid-cols-3">
+                  <p className="mt-2 text-sm text-slate-500">
+                    {search
+                      ? "Try another search."
+                      : "Create a board to get started."}
+                  </p>
 
-                    {displayedBoards.map(
-                      (board) => {
+                  {!search && activeMenu === "Dashboard" && (
 
-                        const isFavorite =
-                          favorites.includes(
-                            board._id
-                          );
+                    <button
+                      onClick={() => setShowModal(true)}
+                      className="mt-5 rounded-lg bg-indigo-600 px-5 py-2.5 text-sm font-semibold text-white hover:bg-indigo-700"
+                    >
+                      Create Board
+                    </button>
 
-                        return (
+                  )}
+
+                </div>
+
+              )}
+
+              {/* BOARD CARDS */}
+
+              {!loading && displayedBoards.length > 0 && (
+
+                <div className="grid gap-6 sm:grid-cols-2 lg:grid-cols-3">
+
+                  {displayedBoards.map((board) => {
+
+                    const isFavorite = favorites.includes(
+                      board._id
+                    );
+
+                    return (
+
+                      <div
+                        key={board._id}
+                        className="group overflow-hidden rounded-xl border border-slate-200 bg-white shadow-sm transition duration-200 hover:-translate-y-1 hover:shadow-lg"
+                      >
+
+                        {/* PREVIEW */}
+
+                        <div className="relative h-40 overflow-hidden border-b border-slate-200 bg-slate-50">
 
                           <div
-                            key={
-                              board._id
-                            }
-                            className="group overflow-hidden rounded-xl border border-slate-200 bg-white shadow-sm transition duration-200 hover:-translate-y-1 hover:shadow-lg"
-                          >
+                            className="absolute inset-0 opacity-50"
+                            style={{
+                              backgroundImage:
+                                "linear-gradient(#e2e8f0 1px, transparent 1px), linear-gradient(90deg, #e2e8f0 1px, transparent 1px)",
+                              backgroundSize: "20px 20px",
+                            }}
+                          />
 
-                            {/* PREVIEW */}
+                          {/* CIRCLE */}
 
-                            <div className="relative h-40 overflow-hidden border-b border-slate-200 bg-slate-50">
+                          <div className="absolute left-10 top-10 h-14 w-14 rounded-full border-4 border-indigo-500" />
 
-                              <div
-                                className="absolute inset-0 opacity-50"
-                                style={{
-                                  backgroundImage:
-                                    "linear-gradient(#e2e8f0 1px, transparent 1px), linear-gradient(90deg, #e2e8f0 1px, transparent 1px)",
-                                  backgroundSize:
-                                    "20px 20px",
-                                }}
-                              />
+                          {/* LINE */}
 
-                              {/* CIRCLE */}
+                          <div className="absolute left-24 top-24 h-1 w-28 rotate-[-25deg] rounded bg-slate-800" />
 
-                              <div className="absolute left-10 top-10 h-14 w-14 rounded-full border-4 border-indigo-500" />
+                          {/* RECTANGLE */}
 
-                              {/* LINE */}
+                          <div className="absolute right-10 top-8 h-12 w-16 rounded border-4 border-emerald-500" />
 
-                              <div className="absolute left-24 top-24 h-1 w-28 rotate-[-25deg] rounded bg-slate-800" />
+                        </div>
 
-                              {/* RECTANGLE */}
+                        {/* CARD CONTENT */}
 
-                              <div className="absolute right-10 top-8 h-12 w-16 rounded border-4 border-emerald-500" />
+                        <div className="p-5">
 
-                            </div>
+                          <div className="flex items-start justify-between gap-2">
 
-                            {/* CARD CONTENT */}
+                            <h3 className="truncate font-semibold text-slate-900">
+                              {board.title}
+                            </h3>
 
-                            <div className="p-5">
-
-                              <div className="flex items-start justify-between gap-2">
-
-                                <h3 className="truncate font-semibold text-slate-900">
-                                  {board.title}
-                                </h3>
-
-                                <button
-                                  onClick={() =>
-                                    toggleFavorite(
-                                      board._id
-                                    )
-                                  }
-                                  className={`text-xl transition ${
-                                    isFavorite
-                                      ? "text-amber-400"
-                                      : "text-slate-300 hover:text-amber-400"
-                                  }`}
-                                >
-                                  ★
-                                </button>
-
-                              </div>
-
-                              <p className="mt-2 text-xs text-slate-400">
-                                Whiteboard project
-                              </p>
-
-                              <button
-                                onClick={() =>
-                                  handleOpenBoard(
-                                    board._id
-                                  )
-                                }
-                                className="mt-5 w-full rounded-lg border border-slate-300 px-3 py-2 text-sm font-semibold text-slate-700 transition hover:border-indigo-600 hover:bg-indigo-600 hover:text-white"
-                              >
-                                Open Board →
-                              </button>
-
-                              <button
-                                onClick={() =>
-                                  handleDeleteBoard(
-                                    board._id
-                                  )
-                                }
-                                className="mt-2 w-full rounded-lg px-3 py-2 text-xs font-medium text-slate-400 transition hover:bg-red-50 hover:text-red-500"
-                              >
-                                Delete Board
-                              </button>
-
-                            </div>
+                            <button
+                              onClick={() =>
+                                toggleFavorite(board._id)
+                              }
+                              className={`text-xl transition ${
+                                isFavorite
+                                  ? "text-amber-400"
+                                  : "text-slate-300 hover:text-amber-400"
+                              }`}
+                            >
+                              ★
+                            </button>
 
                           </div>
 
-                        );
-                      }
-                    )}
+                          <p className="mt-2 text-xs text-slate-400">
+                            Whiteboard project
+                          </p>
 
-                  </div>
+                          <button
+                            onClick={() =>
+                              handleOpenBoard(board._id)
+                            }
+                            className="mt-5 w-full rounded-lg border border-slate-300 px-3 py-2 text-sm font-semibold text-slate-700 transition hover:border-indigo-600 hover:bg-indigo-600 hover:text-white"
+                          >
+                            Open Board →
+                          </button>
 
-                )}
+                          <button
+                            onClick={() =>
+                              handleDeleteBoard(board._id)
+                            }
+                            className="mt-2 w-full rounded-lg px-3 py-2 text-xs font-medium text-slate-400 transition hover:bg-red-50 hover:text-red-500"
+                          >
+                            Delete Board
+                          </button>
+
+                        </div>
+
+                      </div>
+
+                    );
+
+                  })}
+
+                </div>
+
+              )}
 
             </>
 
           )}
 
-          {/* =================================================
-              SETTINGS
-          ================================================= */}
+          {/* SETTINGS */}
 
-          {activeMenu ===
-            "Settings" && (
+          {activeMenu === "Settings" && (
 
             <div className="rounded-xl border border-slate-200 bg-white p-8 shadow-sm">
 
@@ -960,8 +895,7 @@ function Dashboard() {
               </h2>
 
               <p className="mt-2 text-sm text-slate-500">
-                Settings will be implemented
-                later.
+                Settings will be implemented later.
               </p>
 
             </div>
@@ -972,24 +906,18 @@ function Dashboard() {
 
       </main>
 
-      {/* =================================================
-          CREATE BOARD MODAL
-      ================================================= */}
+      {/* CREATE BOARD MODAL */}
 
       {showModal && (
 
         <div
           className="fixed inset-0 z-50 flex items-center justify-center bg-slate-900/50 p-5"
-          onClick={() =>
-            setShowModal(false)
-          }
+          onClick={() => setShowModal(false)}
         >
 
           <div
             className="w-full max-w-md rounded-2xl bg-white p-6 shadow-2xl"
-            onClick={(e) =>
-              e.stopPropagation()
-            }
+            onClick={(e) => e.stopPropagation()}
           >
 
             <div className="mb-6 flex items-start justify-between">
@@ -1007,9 +935,7 @@ function Dashboard() {
               </div>
 
               <button
-                onClick={() =>
-                  setShowModal(false)
-                }
+                onClick={() => setShowModal(false)}
                 className="flex h-8 w-8 items-center justify-center rounded-lg bg-slate-100 text-xl text-slate-500 hover:bg-slate-200"
               >
                 ×
@@ -1017,11 +943,7 @@ function Dashboard() {
 
             </div>
 
-            <form
-              onSubmit={
-                handleCreateBoard
-              }
-            >
+            <form onSubmit={handleCreateBoard}>
 
               <label className="mb-2 block text-sm font-semibold text-slate-700">
                 Board Name
@@ -1031,9 +953,7 @@ function Dashboard() {
                 type="text"
                 value={boardTitle}
                 onChange={(e) =>
-                  setBoardTitle(
-                    e.target.value
-                  )
+                  setBoardTitle(e.target.value)
                 }
                 placeholder="e.g. Project Planning"
                 autoFocus
@@ -1044,9 +964,7 @@ function Dashboard() {
 
                 <button
                   type="button"
-                  onClick={() =>
-                    setShowModal(false)
-                  }
+                  onClick={() => setShowModal(false)}
                   className="rounded-lg border border-slate-300 px-4 py-2.5 text-sm font-semibold text-slate-700 hover:bg-slate-50"
                 >
                   Cancel
